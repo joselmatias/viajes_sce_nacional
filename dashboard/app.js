@@ -54,10 +54,10 @@
   });
 
   function matchesFilter(v) {
-    if (filter === 'all')         return true;
-    if (filter === 'inspeccion')  return /inspección/i.test(v.type);
-    if (filter === 'reunion')     return /reunión/i.test(v.type);
-    if (filter === 'dialogo')     return /diálogo/i.test(v.type);
+    if (filter === 'all')          return true;
+    if (filter === 'cooperacion')  return /cooperación/i.test(v.type);
+    if (filter === 'territorial')  return /convenio|reunión|sesión|congreso|jornada|foro/i.test(v.type);
+    if (filter === 'rendicion')    return /rendición/i.test(v.type);
     return true;
   }
 
@@ -87,7 +87,9 @@
       });
       row.addEventListener('mouseenter', () => {
         focusVisit(v.code);
-        window.dispatchEvent(new CustomEvent('plane:launch', { detail: v.code }));
+        if (!v.isOrigin) {
+          window.dispatchEvent(new CustomEvent('plane:launch', { detail: v.code }));
+        }
       });
       list.appendChild(row);
     });

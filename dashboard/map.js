@@ -52,7 +52,8 @@ let zoomT            = 0;
 const ZOOM_ECUAD_SCALE_FACTOR = 1.15; // zoom-in ligero al ir a destino
 
 // ── Highlight ────────────────────────────────────────────────────────────────
-let highlightedCode = null;
+let highlightedCode     = null;
+let galapagosHighlighted = false;
 
 // ── Animación ────────────────────────────────────────────────────────────────
 let animT    = 0;
@@ -95,11 +96,14 @@ function px(lon, lat) { return proj([lon, lat]); }
 // ════════════════════════════════════════════════════════════════════════════
 function buildRoutes() {
   routes.length = 0;
-  window.VISITS.forEach((v, i) => {
+  let routeIdx = 0;
+  window.VISITS.forEach((v) => {
+    if (v.isOrigin) return; // eventos Quito no generan ruta
     const o = px(ORIGIN.lon, ORIGIN.lat);
     const d = px(v.lon, v.lat);
     const cp = arcCP(o, d);
-    routes.push({ data: v, o, d, cp, progress: 0, offset: i * 0.7 });
+    routes.push({ data: v, o, d, cp, progress: 0, offset: routeIdx * 0.7 });
+    routeIdx++;
   });
 }
 
@@ -138,6 +142,13 @@ function smoothstep(e0, e1, x) {
   return t * t * (3 - 2 * t);
 }
 
+// Devuelve true si el punto px está dentro (o cerca) del canvas
+function isOnScreen(pt) {
+  if (!pt) return false;
+  const m = 80;
+  return pt[0] > -m && pt[0] < W + m && pt[1] > -m && pt[1] < H + m;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // RENDER
 // ════════════════════════════════════════════════════════════════════════════
@@ -169,19 +180,23 @@ function draw(dt) {
   // Límites provinciales (encima del relleno, debajo del borde nítido)
   if (provincesFC) drawProvinces(provincesFC, pathGen);
 
-  // Inset Galápagos
-  if (galapagosFeature) drawGalapagosInset();
+  // Inset Galápagos — se oculta cuando está activo el zoom de Galápagos
+  if (galapagosFeature && !galapagosHighlighted) drawGalapagosInset();
 
-  // Arcos animados
+  // Arcos animados — solo si el destino está en pantalla
   routes.forEach((r, i) => {
+    if (!isOnScreen(r.d)) return;
     const spd   = 0.22;
     const cycle = (animT * spd + r.offset) % 1.6;
     r.progress  = Math.min(1, cycle);
     drawArc(r);
   });
 
-  // Marcadores de destino
-  routes.forEach(r => drawCityMarker(r.d, r.data, r.data.code === highlightedCode));
+  // Marcadores de destino — solo si el destino está en pantalla
+  routes.forEach(r => {
+    if (!isOnScreen(r.d)) return;
+    drawCityMarker(r.d, r.data, r.data.code === highlightedCode);
+  });
 
   // Origen (Quito)
   drawOriginMarker();
@@ -270,7 +285,6 @@ function drawEcuadorLand(feat, pg) {
 function drawGalapagosInset() {
   const { x, y, w, h } = galInsetBounds();
 
-  // Proyección local recalculada cada frame con la y correcta
   const gScale    = (w / 3.2) * 48;
   const localProj = geoMercator()
     .center(GAL_CENTER)
@@ -278,11 +292,15 @@ function drawGalapagosInset() {
     .translate([x + w / 2, y + h / 2]);
   const localPath = geoPath().projection(localProj).context(ctx);
 
+  const hl = galapagosHighlighted;
+  const pulse = Math.sin(animT * 2.6);
+
   // Fondo inset
   ctx.save();
   ctx.fillStyle   = 'rgba(7,11,20,0.88)';
-  ctx.strokeStyle = GOLD_A(0.35);
-  ctx.lineWidth   = 1;
+  ctx.strokeStyle = hl ? GOLD : GOLD_A(0.35);
+  ctx.lineWidth   = hl ? 1.5 : 1;
+  if (hl) { ctx.shadowColor = GOLD; ctx.shadowBlur = 10 + 5 * pulse; }
   ctx.beginPath(); ctx.rect(x, y, w, h);
   ctx.fill(); ctx.stroke();
   ctx.restore();
@@ -295,8 +313,9 @@ function drawGalapagosInset() {
 
   // Etiqueta superior
   ctx.save();
-  ctx.fillStyle = GOLD_A(0.9);
-  ctx.font      = "8px 'JetBrains Mono', monospace";
+  ctx.fillStyle = hl ? GOLD : GOLD_A(0.9);
+  ctx.font      = hl ? "bold 8px 'JetBrains Mono', monospace" : "8px 'JetBrains Mono', monospace";
+  if (hl) { ctx.shadowColor = GOLD_A(0.5); ctx.shadowBlur = 5; }
   ctx.fillText('ISLAS GALÁPAGOS', x + 6, y + 12);
   ctx.restore();
 }
@@ -349,7 +368,7 @@ function drawCityMarker([x, y], data, hl) {
   ctx.beginPath(); ctx.arc(x, y, r + 5, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
 
-  // Nombre siempre visible; mayor énfasis cuando está activo
+  // Nombre — segunda palabra en línea separada si es nombre compuesto
   ctx.save();
   if (hl) {
     ctx.shadowColor = GOLD_A(0.45); ctx.shadowBlur = 7;
@@ -359,41 +378,60 @@ function drawCityMarker([x, y], data, hl) {
     ctx.fillStyle   = GOLD_A(0.72);
     ctx.font        = "9.5px 'JetBrains Mono', monospace";
   }
-  ctx.fillText(data.capital.toUpperCase(), x + 12, y + 4);
+  const lineH = hl ? 12 : 11;
+  const words = data.capital.toUpperCase().split(' ');
+  if (words.length === 1) {
+    ctx.fillText(words[0], x + 12, y + 4);
+  } else {
+    const topY = y - Math.floor(words.length / 2) * lineH + (lineH / 2);
+    words.forEach((w, i) => ctx.fillText(w, x + 12, topY + i * lineH));
+  }
   ctx.restore();
 }
 
 // ── Marcador Quito (origen) ───────────────────────────────────────────────────
 function drawOriginMarker() {
   const [x, y] = px(ORIGIN.lon, ORIGIN.lat) || [0, 0];
+  const hl = highlightedCode && window.VISITS.find(v => v.code === highlightedCode)?.isOrigin;
+  const r  = hl ? 7 : 5;
 
   // Dot
   ctx.save();
-  ctx.shadowColor = GOLD; ctx.shadowBlur = 18;
+  ctx.shadowColor = GOLD; ctx.shadowBlur = hl ? 28 : 18;
   ctx.fillStyle   = GOLD;
-  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 
   // Anillo estático
   ctx.save();
-  ctx.strokeStyle = GOLD; ctx.lineWidth = 1; ctx.globalAlpha = 0.8;
-  ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = GOLD; ctx.lineWidth = hl ? 1.5 : 1; ctx.globalAlpha = hl ? 1 : 0.8;
+  ctx.beginPath(); ctx.arc(x, y, r + 5, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
 
   // Anillo pulsante
   const s = 1 + 0.5 * Math.sin(animT * 2.4);
   ctx.save();
   ctx.strokeStyle  = GOLD;
-  ctx.lineWidth    = 1;
-  ctx.globalAlpha  = 0.45 * (1 - (s - 1));
-  ctx.shadowColor  = GOLD; ctx.shadowBlur = 10;
-  ctx.beginPath(); ctx.arc(x, y, 10 * s, 0, Math.PI * 2); ctx.stroke();
+  ctx.lineWidth    = hl ? 1.5 : 1;
+  ctx.globalAlpha  = (hl ? 0.65 : 0.45) * (1 - (s - 1));
+  ctx.shadowColor  = GOLD; ctx.shadowBlur = hl ? 18 : 10;
+  ctx.beginPath(); ctx.arc(x, y, (r + 5) * s, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
+
+  // Segundo anillo extra cuando evento UIO seleccionado
+  if (hl) {
+    const s2 = 1 + 0.4 * Math.sin(animT * 1.8 + 1.2);
+    ctx.save();
+    ctx.strokeStyle = GOLD; ctx.lineWidth = 1; ctx.globalAlpha = 0.3 * (1 - (s2 - 1));
+    ctx.beginPath(); ctx.arc(x, y, (r + 14) * s2, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
 
   // Label
   ctx.save();
-  ctx.fillStyle = GOLD_A(0.9);
-  ctx.font      = "9px 'JetBrains Mono', monospace";
+  ctx.fillStyle = hl ? GOLD : GOLD_A(0.9);
+  ctx.font      = hl ? "bold 10px 'JetBrains Mono', monospace" : "9px 'JetBrains Mono', monospace";
+  if (hl) { ctx.shadowColor = GOLD_A(0.5); ctx.shadowBlur = 6; }
   ctx.fillText('QUITO', x + 14, y + 4);
   ctx.restore();
 }
@@ -428,14 +466,15 @@ function drawPlane([x, y], [tx, ty]) {
 // CÁMARA — posición óptima para Ecuador (análogo a routeCamPos del globe)
 // ════════════════════════════════════════════════════════════════════════════
 function routeCamParams(visit) {
-  // Punto medio geográfico entre Quito y el destino (más bias al destino)
+  if (visit.isGalapagos) {
+    // Zoom-out para mostrar Ecuador continental + Islas Galápagos en una misma vista
+    return { center: [-84.5, -1.5], scale: defScale * 0.45 };
+  }
   const dLon = visit.lon - ORIGIN.lon;
   const dLat = visit.lat - ORIGIN.lat;
   const dist  = Math.hypot(dLon, dLat);
-  // Peso 70% hacia destino, 30% hacia Quito (rutas cortas en Ecuador)
   const midLon = ORIGIN.lon + dLon * 0.65;
   const midLat = ORIGIN.lat + dLat * 0.65;
-  // Ligero zoom-in para rutas cortas
   const scale  = defScale * (1 + Math.max(0, (4 - dist) / 6) * 0.45);
   return { center: [midLon, midLat], scale: Math.min(defScale * 1.6, scale) };
 }
@@ -446,8 +485,10 @@ function routeCamParams(visit) {
 window.addEventListener('visit:focus', (e) => {
   const visit = window.VISITS.find(v => v.code === e.detail);
   if (!visit) return;
-  highlightedCode = e.detail;
-  if (cameraPhase) return; // plane:launch maneja la cámara
+  highlightedCode      = e.detail;
+  galapagosHighlighted = !!visit.isGalapagos;
+
+  if (cameraPhase) return;
   const cam = routeCamParams(visit);
   zoomStart  = { center: [...currentCenter], scale: currentScale };
   zoomTarget = cam;
@@ -474,8 +515,9 @@ window.addEventListener('plane:launch', (e) => {
 });
 
 window.addEventListener('visit:resetview', () => {
-  highlightedCode  = null;
-  cameraPhase      = null;
+  highlightedCode      = null;
+  galapagosHighlighted = false;
+  cameraPhase          = null;
   cameraDestCenter = null;
   cameraDestScale  = null;
   zoomStart  = { center: [...currentCenter], scale: currentScale };
